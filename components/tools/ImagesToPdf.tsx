@@ -38,23 +38,49 @@ const loadImageElement = (url: string): Promise<HTMLImageElement> =>
     img.src = url;
   });
 
-// pdf-lib only embeds JPEG/PNG natively; convert anything else via canvas.
-const toPngBytes = async (file: File): Promise<Uint8Array> => {
+// Cap the longest edge. Keeps every canvas well under mobile Safari's per-canvas
+// pixel limit while still leaving ~260 dpi on an A4 page.
+const MAX_DIM = 2000;
+
+// Draw the image onto a (downscaled) canvas and hand back JPEG bytes that
+// pdf-lib can embed. Doing this for *every* image normalizes formats
+// (incl. HEIC/WebP that the browser can decode but pdf-lib can't) and, crucially
+// on mobile, we release the canvas immediately so the next image doesn't hit
+// the OS canvas-memory cap — the cause of the "second image fails" error.
+const renderToJpegBytes = async (file: File): Promise<Uint8Array> => {
   const url = URL.createObjectURL(file);
+  let canvas: HTMLCanvasElement | null = null;
   try {
     const img = await loadImageElement(url);
-    const canvas = document.createElement("canvas");
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
+    const srcW = img.naturalWidth;
+    const srcH = img.naturalHeight;
+    if (!srcW || !srcH) throw new Error("Image has no dimensions.");
+
+    const scale = Math.min(1, MAX_DIM / Math.max(srcW, srcH));
+    const w = Math.max(1, Math.round(srcW * scale));
+    const h = Math.max(1, Math.round(srcH * scale));
+
+    canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Canvas is not supported.");
-    ctx.drawImage(img, 0, 0);
+    // Flatten any transparency onto white so PDF pages don't show black.
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+
     const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/png"),
+      canvas!.toBlob(resolve, "image/jpeg", 0.92),
     );
-    if (!blob) throw new Error("Could not convert image.");
+    if (!blob) throw new Error("Could not encode image.");
     return new Uint8Array(await blob.arrayBuffer());
   } finally {
+    // Free the canvas backing store right away — mobile Safari won't otherwise.
+    if (canvas) {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
     URL.revokeObjectURL(url);
   }
 };
@@ -139,14 +165,22 @@ const ImagesToPdf: React.FC = () => {
       const pdf = await PDFDocument.create();
 
       for (const { file } of images) {
-        const type = file.type;
         let embedded;
-        if (type === "image/jpeg") {
-          embedded = await pdf.embedJpg(await file.arrayBuffer());
-        } else if (type === "image/png") {
-          embedded = await pdf.embedPng(await file.arrayBuffer());
-        } else {
-          embedded = await pdf.embedPng(await toPngBytes(file));
+        try {
+          // Normalize + downscale every image to a JPEG the browser produced.
+          embedded = await pdf.embedJpg(await renderToJpegBytes(file));
+        } catch {
+          // Fallback: embed the original bytes directly (e.g. if canvas failed
+          // but pdf-lib can still read the file as-is).
+          try {
+            const bytes = await file.arrayBuffer();
+            embedded =
+              file.type === "image/png"
+                ? await pdf.embedPng(bytes)
+                : await pdf.embedJpg(bytes);
+          } catch {
+            throw new Error(`Couldn’t add “${file.name}”. Try a JPG or PNG.`);
+          }
         }
 
         const page = pdf.addPage([PAGE.w, PAGE.h]);
@@ -178,7 +212,10 @@ const ImagesToPdf: React.FC = () => {
       console.error("Images -> PDF conversion failed:", err);
       setStatus({
         kind: "error",
-        message: "Something went wrong. One of the images may be unreadable.",
+        message:
+          err instanceof Error && err.message.startsWith("Couldn’t add")
+            ? err.message
+            : "Something went wrong. One of the images may be unreadable.",
       });
     }
   };
