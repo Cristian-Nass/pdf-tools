@@ -1,16 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { FileText, Layers } from "lucide-react";
+import { FileText, Image as ImageIcon, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
 import DocxToPdf from "@/components/tools/DocxToPdf";
 import MergePdf from "@/components/tools/MergePdf";
+import ImagesToPdf from "@/components/tools/ImagesToPdf";
 
-type Tool = "docx" | "merge";
+type Tool = "docx" | "merge" | "images";
 
 const tabs: { id: Tool; label: string; icon: React.ElementType }[] = [
   { id: "docx", label: "Word to PDF", icon: FileText },
   { id: "merge", label: "Merge PDFs", icon: Layers },
+  { id: "images", label: "Images to PDF", icon: ImageIcon },
 ];
 
 const PdfTools: React.FC = () => {
@@ -21,14 +23,15 @@ const PdfTools: React.FC = () => {
       <div className="mb-6 text-center">
         <h1 className="text-2xl font-semibold tracking-tight">PDF Tools</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Convert Word documents and combine PDFs — right in your browser.
+          Convert Word files, combine PDFs, and turn images into PDF — right in
+          your browser.
         </p>
       </div>
 
       <div
         role="tablist"
         aria-label="PDF tools"
-        className="mb-4 grid grid-cols-2 gap-1 rounded-xl bg-muted p-1"
+        className="mb-4 grid grid-cols-3 gap-1 rounded-xl bg-muted p-1"
       >
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
@@ -37,7 +40,7 @@ const PdfTools: React.FC = () => {
             aria-selected={tool === id}
             onClick={() => setTool(id)}
             className={cn(
-              "flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+              "flex flex-col items-center justify-center gap-1.5 rounded-lg px-2 py-2.5 text-center text-xs font-medium transition-colors",
               tool === id
                 ? "bg-background text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground",
@@ -50,7 +53,9 @@ const PdfTools: React.FC = () => {
       </div>
 
       <div className="rounded-2xl border bg-card p-8 shadow-sm">
-        {tool === "docx" ? <DocxToPdf /> : <MergePdf />}
+        {tool === "docx" && <DocxToPdf />}
+        {tool === "merge" && <MergePdf />}
+        {tool === "images" && <ImagesToPdf />}
       </div>
     </div>
   );
