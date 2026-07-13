@@ -179,7 +179,9 @@ const ImagesToPdf: React.FC = () => {
                 ? await pdf.embedPng(bytes)
                 : await pdf.embedJpg(bytes);
           } catch {
-            throw new Error(`Couldn’t add “${file.name}”. Try a JPG or PNG.`);
+            throw new Error(
+              `Couldn’t add “${file.name}”. Phones have limited memory, so large photos can fail here — try adding fewer or smaller images, or use a computer for big files.`,
+            );
           }
         }
 
