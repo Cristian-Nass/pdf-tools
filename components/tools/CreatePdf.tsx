@@ -7,10 +7,17 @@ import {
   AlignRight,
   Bold,
   Download,
+  Eye,
   FilePlus2,
   Italic,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogPopup,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 
 type PageKey = "A4" | "A5" | "Letter";
@@ -218,6 +225,8 @@ const CreatePdf: React.FC = () => {
   const [align, setAlign] = useState<Align>("left");
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
   const [changed, setChanged] = useState(false);
   const urlRef = useRef<string | null>(null);
 
@@ -233,44 +242,30 @@ const CreatePdf: React.FC = () => {
     align,
   };
 
-  // Debounced live preview.
-  useEffect(() => {
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      if (!title.trim() && !body.trim()) {
-        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-        urlRef.current = null;
-        if (!cancelled) {
-          setPreviewUrl(null);
-          setChanged(false);
-        }
-        return;
-      }
-      try {
-        const { bytes, changed } = await buildPdf(params);
-        if (cancelled) return;
-        const blob = new Blob([bytes as BlobPart], { type: "application/pdf" });
-        const url = URL.createObjectURL(blob);
-        if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-        urlRef.current = url;
-        setPreviewUrl(url);
-        setChanged(changed);
-      } catch (err) {
-        console.error("Create PDF preview failed:", err);
-      }
-    }, 350);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [title, body, page, family, fontSize, lineSpacing, bold, italic, align]);
-
+  // Revoke the preview object URL when the component unmounts.
   useEffect(() => {
     return () => {
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
     };
   }, []);
+
+  const openPreview = async () => {
+    setPreviewing(true);
+    try {
+      const { bytes, changed } = await buildPdf(params);
+      const blob = new Blob([bytes as BlobPart], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      urlRef.current = url;
+      setPreviewUrl(url);
+      setChanged(changed);
+      setPreviewOpen(true);
+    } catch (err) {
+      console.error("Create PDF preview failed:", err);
+    } finally {
+      setPreviewing(false);
+    }
+  };
 
   const download = async () => {
     const { bytes } = await buildPdf(params);
@@ -403,43 +398,61 @@ const CreatePdf: React.FC = () => {
           value={body}
           onChange={(e) => setBody(e.target.value)}
           placeholder="Type or paste your text here…"
-          rows={8}
-          className="mt-3 w-full resize-y rounded-lg border bg-background p-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          rows={16}
+          className="mt-3 min-h-80 w-full resize-y rounded-lg border bg-background p-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         />
-
-        {changed && (
-          <p className="mt-2 text-xs text-muted-foreground">
-            Some characters aren’t supported by the built-in fonts and were
-            replaced with “?”.
-          </p>
-        )}
-
-        {/* Live preview */}
-        <p className="mt-4 text-sm font-medium">Preview</p>
-        <div className="mt-1.5 h-80 w-full overflow-hidden rounded-lg border bg-muted/40">
-          {previewUrl ? (
-            <iframe
-              title="PDF preview"
-              src={`${previewUrl}#toolbar=0`}
-              className="h-full w-full"
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center px-6 text-center text-sm text-muted-foreground">
-              Start typing to see a live preview.
-            </div>
-          )}
-        </div>
       </div>
 
-      <Button
-        className="mt-4 w-full"
-        size="lg"
-        onClick={download}
-        disabled={!hasContent}
-      >
-        <Download className="size-4" />
-        Download PDF
-      </Button>
+      <div className="mt-4 flex w-full gap-2">
+        <Button
+          variant="outline"
+          className="flex-1"
+          size="lg"
+          onClick={openPreview}
+          disabled={!hasContent || previewing}
+        >
+          {previewing ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Eye className="size-4" />
+          )}
+          Preview
+        </Button>
+        <Button
+          className="flex-1"
+          size="lg"
+          onClick={download}
+          disabled={!hasContent}
+        >
+          <Download className="size-4" />
+          Download PDF
+        </Button>
+      </div>
+
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogPopup className="sm:h-[90vh] sm:max-w-3xl">
+          <DialogTitle>Preview</DialogTitle>
+          {changed && (
+            <p className="text-xs text-muted-foreground">
+              Some characters aren’t supported by the built-in fonts and were
+              replaced with “?”.
+            </p>
+          )}
+          <div className="min-h-0 flex-1 overflow-hidden rounded-lg border bg-muted/40">
+            {previewUrl && (
+              <iframe
+                title="PDF preview"
+                src={`${previewUrl}#toolbar=0`}
+                className="h-full w-full"
+              />
+            )}
+          </div>
+          <Button className="w-full" onClick={download}>
+            <Download className="size-4" />
+            Download PDF
+          </Button>
+        </DialogPopup>
+      </Dialog>
     </div>
   );
 };
