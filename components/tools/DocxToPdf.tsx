@@ -6,9 +6,14 @@ import { Button } from "@/components/ui/button";
 
 type Status =
   | { kind: "idle" }
-  | { kind: "converting"; name: string }
+  | { kind: "converting"; page: number; total: number }
   | { kind: "done"; name: string }
   | { kind: "error"; message: string };
+
+// Keep each rasterized page within mobile Safari's per-canvas pixel budget.
+const MAX_CANVAS_DIM = 2600;
+// CSS px (96dpi) → PDF points (72dpi).
+const PX_TO_PT = 72 / 96;
 
 const DocxToPdf: React.FC = () => {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -32,30 +37,86 @@ const DocxToPdf: React.FC = () => {
       return;
     }
 
-    setStatus({ kind: "converting", name: file.name });
+    setStatus({ kind: "converting", page: 0, total: 0 });
+
+    // Render the DOCX off-screen with full styling, then snapshot each page.
+    const container = document.createElement("div");
+    container.className = "docx-capture-root";
+    container.style.position = "fixed";
+    container.style.left = "-10000px";
+    container.style.top = "0";
+    container.style.background = "#ffffff";
+    // Stop the app's oklch foreground color from being inherited.
+    container.style.color = "#000000";
+    document.body.appendChild(container);
+
+    // The app's Tailwind theme sets border/outline colors in oklch on every
+    // element (`*`). html2canvas 1.4.1 can't parse oklch/lab and would throw,
+    // so override those leaked defaults with sRGB. Low specificity keeps
+    // docx-preview's own (sRGB) colors winning.
+    const resetStyle = document.createElement("style");
+    resetStyle.textContent =
+      ".docx-capture-root *{border-color:#e5e7eb;outline-color:#e5e7eb;text-decoration-color:currentColor;}";
+    document.head.appendChild(resetStyle);
 
     try {
-      const arrayBuffer = await file.arrayBuffer();
+      const { renderAsync } = await import("docx-preview");
+      const html2canvas = (await import("html2canvas")).default;
+      const { PDFDocument } = await import("pdf-lib");
 
-      // DOCX -> HTML
-      const mammoth = await import("mammoth/mammoth.browser");
-      const { value: html } = await mammoth.convertToHtml({ arrayBuffer });
+      await renderAsync(await file.arrayBuffer(), container, undefined, {
+        inWrapper: false,
+        breakPages: true,
+        ignoreWidth: false,
+        ignoreHeight: false,
+      });
 
-      // HTML -> pdfmake content
-      const htmlToPdfmakeModule = await import("html-to-pdfmake");
-      const htmlToPdfmake = htmlToPdfmakeModule.default ?? htmlToPdfmakeModule;
-      const content = htmlToPdfmake(html, { window });
+      const pageEls = Array.from(
+        container.querySelectorAll<HTMLElement>("section.docx"),
+      );
+      const pages = pageEls.length
+        ? pageEls
+        : (Array.from(container.children) as HTMLElement[]);
+      if (pages.length === 0) throw new Error("Nothing to render.");
 
-      // pdfmake (browser build + embedded Roboto fonts)
-      const pdfMakeModule = await import("pdfmake/build/pdfmake");
-      const pdfMake = pdfMakeModule.default ?? pdfMakeModule;
-      const vfsModule = await import("pdfmake/build/vfs_fonts");
-      pdfMake.vfs = vfsModule.default ?? vfsModule;
+      const pdf = await PDFDocument.create();
 
+      for (let i = 0; i < pages.length; i++) {
+        setStatus({ kind: "converting", page: i + 1, total: pages.length });
+        const el = pages[i];
+        const cssW = el.offsetWidth;
+        const cssH = el.offsetHeight;
+        const scale = Math.min(2, MAX_CANVAS_DIM / Math.max(cssW, cssH));
+
+        const canvas = await html2canvas(el, {
+          scale,
+          backgroundColor: "#ffffff",
+          useCORS: true,
+          logging: false,
+        });
+        const blob = await new Promise<Blob | null>((resolve) =>
+          canvas.toBlob(resolve, "image/jpeg", 0.92),
+        );
+        canvas.width = 0;
+        canvas.height = 0;
+        if (!blob) throw new Error("Could not render a page.");
+
+        const img = await pdf.embedJpg(await blob.arrayBuffer());
+        const wPt = cssW * PX_TO_PT;
+        const hPt = cssH * PX_TO_PT;
+        const outPage = pdf.addPage([wPt, hPt]);
+        outPage.drawImage(img, { x: 0, y: 0, width: wPt, height: hPt });
+      }
+
+      const bytes = await pdf.save();
+      const blob = new Blob([bytes as BlobPart], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
       const outName = file.name.replace(/\.docx$/i, ".pdf");
-      pdfMake
-        .createPdf({ content, defaultStyle: { font: "Roboto" } })
-        .download(outName);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = outName;
+      a.click();
+      URL.revokeObjectURL(url);
 
       setStatus({ kind: "done", name: outName });
     } catch (err) {
@@ -64,6 +125,9 @@ const DocxToPdf: React.FC = () => {
         kind: "error",
         message: "Something went wrong while converting the file.",
       });
+    } finally {
+      document.body.removeChild(container);
+      resetStyle.remove();
     }
   };
 
@@ -75,7 +139,8 @@ const DocxToPdf: React.FC = () => {
 
       <h2 className="text-xl font-semibold">Word to PDF</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Pick a Word (.docx) file and download it as a PDF.
+        Convert a Word (.docx) file to PDF, keeping its colors, backgrounds,
+        fonts, and layout.
       </p>
 
       <input
@@ -95,7 +160,9 @@ const DocxToPdf: React.FC = () => {
         {isConverting ? (
           <>
             <Loader2 className="size-4 animate-spin" />
-            Converting…
+            {status.total
+              ? `Converting… (${status.page}/${status.total})`
+              : "Converting…"}
           </>
         ) : (
           <>
@@ -104,6 +171,10 @@ const DocxToPdf: React.FC = () => {
           </>
         )}
       </Button>
+
+      <p className="mt-3 text-xs text-muted-foreground">
+        Pages are saved as images, so the text won’t be selectable.
+      </p>
 
       {status.kind === "done" && (
         <p className="mt-4 flex items-center gap-1.5 text-sm text-emerald-600 dark:text-emerald-400">

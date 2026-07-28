@@ -11,7 +11,7 @@ A single tabbed UI ([components/PdfTools.tsx](components/PdfTools.tsx)) switches
 | Tool | File | Libraries | Notes |
 | --- | --- | --- | --- |
 | Create PDF | `CreatePdf.tsx` | pdf-lib | Type/paste text → PDF. Page size, font (Helvetica/Times/Courier standard fonts, no embedding), size, bold/italic, alignment, line spacing. Custom wrap/paginate/align layout engine; sanitizes pasted text and swaps unencodable chars for `?`. Preview opens in a `Dialog`. |
-| Word → PDF | `DocxToPdf.tsx` | mammoth, html-to-pdfmake, pdfmake | DOCX → HTML → pdfmake. Fidelity is limited (loses tables/images/most styling). |
+| Word → PDF | `DocxToPdf.tsx` | docx-preview, html2canvas, pdf-lib | Renders the DOCX to a styled DOM (docx-preview), rasterizes each page (html2canvas) into a PDF. Keeps colors/backgrounds/fonts/layout. **Lossy: text stops being selectable.** (Previously mammoth→pdfmake, which dropped all color/styling.) |
 | Images → PDF | `ImagesToPdf.tsx` | pdf-lib | JPG/PNG/others → one image per A4 page. |
 | Merge PDFs | `MergePdf.tsx` | pdf-lib | Multi-select, reorder, remove; `copyPages` into one doc. |
 | Split PDF | `SplitPdf.tsx` | pdf-lib | Extracts a page selection (`1-3, 5, 8-10`) into one new PDF. Output only, v1. |
@@ -36,6 +36,10 @@ Mobile Safari caps per-canvas pixels and is slow to free canvas memory, which ca
 3. Wrap per-file work so a failure names the file instead of failing the whole batch.
 
 See `renderToJpegBytes` in `ImagesToPdf.tsx` and the render loops in `CompressPdf.tsx` and `RotatePdf.tsx`.
+
+## html2canvas + oklch (Word → PDF gotcha)
+
+`html2canvas@1.4.1` can't parse modern CSS color functions (`oklch`/`lab`), and this app's Tailwind v4 theme ([app/globals.css](app/globals.css)) sets `border-color`/`outline-color` in `oklch` on **every** element via `*`. Those leak onto the off-screen docx nodes and make html2canvas throw `Attempting to parse an unsupported color function "lab"`. `DocxToPdf.tsx` works around it by rendering into a `.docx-capture-root` container with an injected `<style>` that overrides the leaked `border-color`/`outline-color`/`text-decoration-color` with sRGB (low specificity, so docx-preview's own colors still win) plus an inline black `color`. Keep this in place; don't reintroduce raw oklch onto captured nodes.
 
 ## pdf.js worker
 
