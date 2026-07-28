@@ -56,7 +56,7 @@ const DocxToPdf: React.FC = () => {
     // docx-preview's own (sRGB) colors winning.
     const resetStyle = document.createElement("style");
     resetStyle.textContent =
-      ".docx-capture-root *{border-color:#e5e7eb;outline-color:#e5e7eb;text-decoration-color:currentColor;}";
+      ".docx-capture-root *{border-color:#e5e7eb;outline-color:#e5e7eb;text-decoration-color:currentColor;word-break:normal;overflow-wrap:normal;hyphens:none;}";
     document.head.appendChild(resetStyle);
 
     try {
@@ -67,32 +67,65 @@ const DocxToPdf: React.FC = () => {
       await renderAsync(await file.arrayBuffer(), container, undefined, {
         inWrapper: false,
         breakPages: true,
+        // Honor Word's page breaks so multi-page docs actually paginate.
+        ignoreLastRenderedPageBreak: false,
         ignoreWidth: false,
         ignoreHeight: false,
       });
 
-      const pageEls = Array.from(
+      const sections = Array.from(
         container.querySelectorAll<HTMLElement>("section.docx"),
       );
-      const pages = pageEls.length
-        ? pageEls
-        : (Array.from(container.children) as HTMLElement[]);
-      if (pages.length === 0) throw new Error("Nothing to render.");
+      const pageSections = sections.length ? sections : [container];
+
+      // Each rendered section maps to one Word page — but if a file lacks
+      // page-break markers, docx-preview yields one very tall section. Slice
+      // every section into page-height bands so the PDF paginates like Word.
+      type Slice = {
+        el: HTMLElement;
+        y: number;
+        sliceH: number;
+        pageH: number;
+        width: number;
+      };
+      const slices: Slice[] = [];
+      for (const section of pageSections) {
+        const width = section.offsetWidth;
+        const minH = parseFloat(getComputedStyle(section).minHeight);
+        // Fall back to A4 aspect if the page height isn't expressed.
+        const pageH = minH && !Number.isNaN(minH) ? minH : width * (297 / 210);
+        const totalH = section.scrollHeight;
+        const count = Math.max(1, Math.ceil(totalH / pageH - 0.02));
+        for (let i = 0; i < count; i++) {
+          const y = i * pageH;
+          slices.push({
+            el: section,
+            y,
+            sliceH: Math.min(pageH, totalH - y),
+            pageH,
+            width,
+          });
+        }
+      }
+      if (slices.length === 0) throw new Error("Nothing to render.");
 
       const pdf = await PDFDocument.create();
 
-      for (let i = 0; i < pages.length; i++) {
-        setStatus({ kind: "converting", page: i + 1, total: pages.length });
-        const el = pages[i];
-        const cssW = el.offsetWidth;
-        const cssH = el.offsetHeight;
-        const scale = Math.min(2, MAX_CANVAS_DIM / Math.max(cssW, cssH));
+      for (let i = 0; i < slices.length; i++) {
+        setStatus({ kind: "converting", page: i + 1, total: slices.length });
+        const { el, y, sliceH, pageH, width } = slices[i];
+        const scale = Math.min(2, MAX_CANVAS_DIM / Math.max(width, pageH));
 
         const canvas = await html2canvas(el, {
           scale,
           backgroundColor: "#ffffff",
           useCORS: true,
           logging: false,
+          x: 0,
+          y,
+          width,
+          height: sliceH,
+          windowWidth: width,
         });
         const blob = await new Promise<Blob | null>((resolve) =>
           canvas.toBlob(resolve, "image/jpeg", 0.92),
@@ -102,10 +135,17 @@ const DocxToPdf: React.FC = () => {
         if (!blob) throw new Error("Could not render a page.");
 
         const img = await pdf.embedJpg(await blob.arrayBuffer());
-        const wPt = cssW * PX_TO_PT;
-        const hPt = cssH * PX_TO_PT;
-        const outPage = pdf.addPage([wPt, hPt]);
-        outPage.drawImage(img, { x: 0, y: 0, width: wPt, height: hPt });
+        const wPt = width * PX_TO_PT;
+        const pageHPt = pageH * PX_TO_PT;
+        const imgHPt = sliceH * PX_TO_PT;
+        const outPage = pdf.addPage([wPt, pageHPt]);
+        // Anchor to the top; a short final slice leaves white space below.
+        outPage.drawImage(img, {
+          x: 0,
+          y: pageHPt - imgHPt,
+          width: wPt,
+          height: imgHPt,
+        });
       }
 
       const bytes = await pdf.save();
